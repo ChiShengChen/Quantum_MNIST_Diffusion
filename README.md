@@ -1,1 +1,119 @@
-# Quantum_MNIST_Diffusion
+# Quantum Diffusion Models
+
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org/)
+[![PennyLane](https://img.shields.io/badge/PennyLane-0.30%2B-green)](https://pennylane.ai/)
+
+A novel approach to image generation using quantum-enhanced diffusion models. This project implements diffusion models enhanced with quantum circuits for medical and standard image generation.
+
+## 📋 Overview
+
+This repository explores the integration of quantum computing into diffusion models for image generation. The implementation provides both classical and quantum-enhanced versions of diffusion models for MNIST and PathMNIST datasets.
+
+Key features:
+- Quantum-enhanced attention mechanism for diffusion models
+- Classical vs quantum model comparison framework
+- Evaluation metrics (FID, SSIM) for generated images
+- Support for MNIST and PathMNIST medical datasets
+
+## 🚀 Models
+
+### Diffusion Model Architecture
+- **U-Net backbone** with residual blocks and skip connections
+- **Flexible channels** for both MNIST (grayscale) and PathMNIST (RGB)
+- **Timestep embedding** using sinusoidal positional encoding
+- **Cosine beta scheduling** for improved sampling
+- **Exponential Moving Average (EMA)** for stable training
+
+### Quantum Enhancement
+- **Hybrid quantum-classical model** with quantum attention layers
+- **Parameterized quantum circuits** implemented using PennyLane
+- **RY and RZ rotations** with CNOT entanglement structure
+- **Quantum feature re-weighting** mechanism
+
+## 💿 Datasets
+
+### MNIST
+- Standard handwritten digit recognition dataset
+- Trained on individual digit classes (0-9)
+- Grayscale images (1-channel, 28×28)
+
+### PathMNIST
+- Medical imaging dataset from MedMNIST collection
+- Colorectal cancer histology patches
+- RGB images (3-channel, 28×28)
+- Class-conditional training
+
+## 🔧 Implementation
+
+### Training
+```python
+# Train classical diffusion model on MNIST
+python quantum_difussion_mnist_v7.py  # --use_quantum=False
+
+# Train quantum diffusion model on MNIST
+python quantum_difussion_mnist_v7.py  # --use_quantum=True
+
+# Train on PathMNIST
+python quantum_difussion_pathmnist_v7.py  # --use_quantum=True/False
+```
+
+### Evaluation
+```python
+# Evaluate generated PathMNIST samples
+python cal_fid_ssim_medmnist.py
+
+# Evaluate generated MNIST samples
+python cal_fid_ssim.py
+
+# Debug image splitting for FID calculation
+python debug_img.py
+```
+
+## 📊 Results
+
+The project evaluates generated images using:
+- **Fréchet Inception Distance (FID)**: measures the similarity between generated and real image distributions
+- **Structural Similarity Index (SSIM)**: measures the perceptual difference between images
+
+Sample results comparing classical and quantum models:
+| Model | Dataset | FID↓ | SSIM↑ |
+|-------|---------|------|-------|
+| Classical | MNIST | ... | ... |
+| Quantum | MNIST | ... | ... |
+| Classical | PathMNIST | ... | ... |
+| Quantum | PathMNIST | ... | ... |
+
+## 📦 Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/quantum-diffusion.git
+cd quantum-diffusion
+
+# Create a conda environment
+conda create -n quantum-diffusion python=3.8
+conda activate quantum-diffusion
+
+# Install dependencies
+pip install torch torchvision tqdm matplotlib pennylane medmnist scikit-image scipy
+```
+
+## 📝 Citation
+
+If you use this code for your research, please cite:
+
+```
+@misc{quantum-diffusion,
+  author = {Your Name},
+  title = {Quantum-Enhanced Diffusion Models},
+  year = {2023},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/yourusername/quantum-diffusion}}
+}
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 
