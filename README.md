@@ -44,6 +44,146 @@ Key features:
 - RGB images (3-channel, 28×28)
 - Class-conditional training
 
+## 📊 Results
+
+### Training Progression Comparison
+
+The following GIFs demonstrate the training progression of both classical and quantum diffusion models for each MNIST digit. Notice how the models learn to generate increasingly refined digit representations over 30 epochs:
+
+#### Digit 0
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist0_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist0_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 1
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist1_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist1_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 2
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist2_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist2_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 3
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist3_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist3_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 4
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist4_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist4_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 5
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist5_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist5_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 6
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist6_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist6_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 7
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist7_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist7_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 8
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist8_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist8_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+#### Digit 9
+<table>
+  <tr>
+    <td><b>Classical Model</b></td>
+    <td><b>Quantum Model</b></td>
+  </tr>
+  <tr>
+    <td><img src="result_gif/classical_mnist9_training_progress.gif" width="250"></td>
+    <td><img src="result_gif/quantum_mnist9_training_progress.gif" width="250"></td>
+  </tr>
+</table>
+
+### Quantitative Evaluation
+
+The project evaluates generated images using:
+- **Fréchet Inception Distance (FID)**: measures the similarity between generated and real image distributions
+- **Structural Similarity Index (SSIM)**: measures the perceptual difference between images
+
+Sample results comparing classical and quantum models:
+| Model | Dataset | FID↓ | SSIM↑ |
+|-------|---------|------|-------|
+| Classical | MNIST | ... | ... |
+| Quantum | MNIST | ... | ... |
+| Classical | PathMNIST | ... | ... |
+| Quantum | PathMNIST | ... | ... |
+
 ## 🔧 Implementation
 
 ### Training
@@ -69,20 +209,6 @@ python cal_fid_ssim.py
 # Debug image splitting for FID calculation
 python debug_img.py
 ```
-
-## 📊 Results
-
-The project evaluates generated images using:
-- **Fréchet Inception Distance (FID)**: measures the similarity between generated and real image distributions
-- **Structural Similarity Index (SSIM)**: measures the perceptual difference between images
-
-Sample results comparing classical and quantum models:
-| Model | Dataset | FID↓ | SSIM↑ |
-|-------|---------|------|-------|
-| Classical | MNIST | ... | ... |
-| Quantum | MNIST | ... | ... |
-| Classical | PathMNIST | ... | ... |
-| Quantum | PathMNIST | ... | ... |
 
 ## 📦 Installation
 
