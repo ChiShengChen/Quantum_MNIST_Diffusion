@@ -1,5 +1,5 @@
 # Quantum Diffusion Models
-
+[![arXiv](https://img.shields.io/badge/arXiv-2504.00034-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2504.00034)  
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org/)
 [![PennyLane](https://img.shields.io/badge/PennyLane-0.30%2B-green)](https://pennylane.ai/)
