@@ -185,9 +185,10 @@ Sample results comparing classical and quantum models:
 | Model | Dataset | FID↓ | SSIM↑ |
 |-------|---------|------|-------|
 | Classical | MNIST | 271.05 | 0.1085 |
-| Quantum | MNIST | 259.25 | 0.1263 |
-| Classical | PathMNIST | 95.72 | 0.4107 |
-| Quantum | PathMNIST | 84.40 | 0.0931 |
+| Quantum | MNIST | **259.25** | **0.1263** |
+|-------|---------|------|-------|
+| Classical | PathMNIST | 95.72 | **0.4107** |
+| Quantum | PathMNIST | **84.40** | 0.0931 |
 
 ## 🔧 Implementation
 
