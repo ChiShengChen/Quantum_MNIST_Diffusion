@@ -18,6 +18,7 @@ Key features:
 - Classical vs quantum model comparison framework
 - Evaluation metrics (FID, SSIM) for generated images
 - Support for MNIST and PathMNIST medical datasets
+- *We trained the quantum diffusion model with fewer than 100 images, demonstrating the advantage of quantum layers in low-data regimes.*
 
 ## 🚀 Models
 
