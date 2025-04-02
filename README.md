@@ -9,6 +9,7 @@ The official implement of Quantum Generative Models for Image Generation: Insigh
 ## 📋 Overview
 
 <img width="459" alt="image" src="https://github.com/user-attachments/assets/d89c02af-5a27-4759-9734-80deca1a1836" />
+<img width="450" alt="image" src="https://github.com/user-attachments/assets/7c0a4fda-27c6-4dae-97c8-7a09c3d1166b" />
 
 
 This repository explores the integration of quantum computing into diffusion models for image generation. The implementation provides both classical and quantum-enhanced versions of diffusion models for MNIST and PathMNIST datasets.
