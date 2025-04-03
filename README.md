@@ -4,7 +4,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org/)
 [![PennyLane](https://img.shields.io/badge/PennyLane-0.30%2B-green)](https://pennylane.ai/)
 
-The official implement of Quantum Generative Models for Image Generation: Insights from MNIST and MedMNIST. A novel approach to image generation using quantum-enhanced diffusion models. This project implements diffusion models enhanced with quantum circuits for medical and standard image generation.
+The official implement of "Quantum Generative Models for Image Generation: Insights from MNIST and MedMNIST". A novel approach to image generation using quantum-enhanced diffusion models. This project implements diffusion models enhanced with quantum circuits for medical and standard image generation.
 
 ## 📋 Overview
 
