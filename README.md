@@ -221,7 +221,7 @@ python debug_img.py
 ```bash
 # Clone the repository
 git clone https://github.com/ChiShengChen/Quantum_MNIST_Diffusion.git
-cd quantum-diffusion
+cd Quantum_MNIST_Diffusion
 
 # Create a conda environment
 conda create -n quantum-diffusion python=3.8
