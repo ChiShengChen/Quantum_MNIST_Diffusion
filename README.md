@@ -236,13 +236,11 @@ pip install torch torchvision tqdm matplotlib pennylane medmnist scikit-image sc
 If you use this code for your research, please cite:
 
 ```
-@misc{quantum-diffusion,
-  author = {Your Name},
-  title = {Quantum-Enhanced Diffusion Models},
-  year = {2023},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/yourusername/quantum-diffusion}}
+@article{chen2025quantum,
+  title={Quantum Generative Models for Image Generation: Insights from MNIST and MedMNIST},
+  author={Chen, Chi-Sheng and Hou, Wei An and Hu, Siang-Wei and Cai, Zhen-Sheng},
+  journal={arXiv preprint arXiv:2504.00034},
+  year={2025}
 }
 ```
 
