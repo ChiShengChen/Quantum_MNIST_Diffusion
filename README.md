@@ -190,7 +190,7 @@ Sample results comparing classical and quantum models:
 | Classical | PathMNIST | 95.72 | **0.4107** |
 | Quantum | PathMNIST | **84.40** | 0.0931 |
 
-I also use the full-skip-connection U-Net (v8) for this generation, but it's not as betteter than ligh-weight one.  
+I tried using the full skip-connection U-Net (v8) for this generation as well, but it didn’t outperform the lightweight one.
 | Model     | Dataset | FID↓         | SSIM↑         |
 | --------- | ------- | ------------ | ------------- |
 | Classical | MNIST   | **275.68**   | 0.0267        |
