@@ -1,0 +1,11 @@
+Digit,FID,SSIM,Generated Count,Real Count Used (FID),Status
+0,311.20,-0.0058,13,5000,Success
+1,288.28,0.0707,13,5000,Success
+2,293.32,0.0318,13,5000,Success
+3,266.53,0.0363,13,5000,Success
+4,237.90,0.0031,13,5000,Success
+5,275.31,0.0249,13,5000,Success
+6,267.51,0.0677,13,5000,Success
+7,245.03,0.0046,13,5000,Success
+8,300.81,0.0189,13,5000,Success
+9,270.94,0.0143,13,5000,Success
