@@ -1,3 +1,24 @@
+"""DEPRECATED -- superseded by evaluate.py.
+
+This script recovers "generated images" by cropping them back out of a saved
+matplotlib figure. That round trip is lossy and is applied to the generated
+images only, while the real images are loaded straight from the dataset, so the
+two distributions differ by an entire image-processing pipeline before Inception
+sees them. The column-gap splitter also over-segments (the committed CSVs report
+13 "digits" recovered from figures containing 5 samples), and the resulting FID
+estimates a 2048x2048 covariance from ~13 vectors.
+
+The SSIM here pairs generated sample i with real image i in dataset order, which
+has no relationship to generative quality.
+
+Use instead:
+    python generate_samples.py --arch ... --checkpoint ... --n 10000 --out s.pt
+    python evaluate.py --generated s.pt --dataset mnist --label 3
+
+Kept only so the numbers currently in the README can be traced back to the code
+that produced them.
+"""
+
 import os
 import numpy as np
 from PIL import Image

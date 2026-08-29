@@ -280,6 +280,11 @@ def train_pipeline(digit_label=1, use_quantum=False, save_dir_base="diffusion_mo
         if (epoch + 1) % 5 == 0 or epoch == epochs - 1: # Sample every 5 epochs and at the end
              ema_model.eval() # Set EMA model to eval mode for sampling
              sample_images = sample(ema_model, diffusion, steps=diffusion.timesteps, batch_size=5)[0:5] # Generate 5 samples
+             # Raw model output for evaluate.py. The .png below is for eyeballing
+             # only -- imshow rescales each subplot to its own min/max and the
+             # figure is rasterized at the figure DPI, so metrics must not be
+             # computed from it.
+             torch.save(sample_images.cpu(), f"{save_dir}/epoch{epoch+1:03d}_samples.pt")
              plt.figure(figsize=(10, 2))
              for i in range(sample_images.size(0)):
                  img = sample_images[i].squeeze().cpu().numpy()
