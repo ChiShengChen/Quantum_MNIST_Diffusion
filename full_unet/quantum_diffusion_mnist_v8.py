@@ -71,14 +71,20 @@ class QuantumLayer(nn.Module):
                 qml.RY(torch.pi * torch.sigmoid(inputs_resized[:, i]), wires=i)
             for l in range(n_layers):
                 for i in range(n_qubits):
-                    qml.RZ(weights[l, i], wires=i)
+                    # A circuit built only from computational-basis-diagonal gates (RZ)
+                    # and computational-basis permutations (CNOT) cannot change
+                    # |<b|psi>|^2, so every <PauliZ> would be independent of `weights`
+                    # and d<Z>/dweights would be identically zero. The RY makes the
+                    # RZ phases observable and restores trainability.
+                    qml.RZ(weights[l, i, 0], wires=i)
+                    qml.RY(weights[l, i, 1], wires=i)
                 for i in range(n_qubits - 1):
                     qml.CNOT(wires=[i, i + 1])
                 # Optional: Entangling layer like CNOT ladder or ring
                 # qml.CNOT(wires=[n_qubits - 1, 0]) # Example: cycle entanglement
             return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
 
-        weight_shapes = {"weights": (n_layers, n_qubits)}
+        weight_shapes = {"weights": (n_layers, n_qubits, 2)}
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         # Projects final qubit measurements back to the embedding dimension
         self.output_proj = nn.Linear(n_qubits, embed_dim)
@@ -86,7 +92,10 @@ class QuantumLayer(nn.Module):
     def forward(self, x):
         # x shape: [Batch, embed_dim]
         # No input projection needed if embed_dim is handled correctly upstream
-        x_cpu = x.detach().cpu() # QNode execution on CPU
+        # `.to('cpu')` rather than `.detach().cpu()`: detaching cut the quantum branch
+        # out of the autograd graph on the input side, so the encoder never received
+        # any gradient through it. The QNode still executes on CPU.
+        x_cpu = x.to('cpu') # QNode execution on CPU
         quantum_output = self.qlayer(x_cpu) # Shape: [Batch, n_qubits]
         quantum_output = quantum_output.to(x.device) # Move back to original device
         return self.output_proj(quantum_output) # Project back to embed_dim
