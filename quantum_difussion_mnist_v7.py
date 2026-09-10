@@ -50,25 +50,34 @@ class QuantumLayer(nn.Module):
 
         @qml.qnode(dev, interface="torch", diff_method="backprop")
         def circuit(inputs, weights):
+            # `inputs[..., i]` (rather than `inputs[i]`) so the same circuit works for
+            # a single sample and for a batched [B, n_qubits] input.
             for i in range(n_qubits):
-                qml.RY(inputs[i], wires=i)
+                qml.RY(inputs[..., i], wires=i)
             for l in range(n_layers):
                 for i in range(n_qubits):
-                    qml.RZ(weights[l, i], wires=i)
+                    # A circuit built only from computational-basis-diagonal gates (RZ)
+                    # and computational-basis permutations (CNOT) cannot change
+                    # |<b|psi>|^2, so every <PauliZ> would be independent of `weights`
+                    # and d<Z>/dweights would be identically zero. The RY makes the
+                    # RZ phases observable and restores trainability.
+                    qml.RZ(weights[l, i, 0], wires=i)
+                    qml.RY(weights[l, i, 1], wires=i)
                 for i in range(n_qubits - 1):
                     qml.CNOT(wires=[i, i + 1])
             return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
 
-        weight_shapes = {"weights": (n_layers, n_qubits)}
+        weight_shapes = {"weights": (n_layers, n_qubits, 2)}
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         self.input_proj = nn.Linear(128, n_qubits)
         self.output_proj = nn.Linear(n_qubits, 128)
 
     def forward(self, x):
         x = self.input_proj(x)
-        x_cpu = x.detach().cpu()
-        results = [self.qlayer(sample) for sample in x_cpu]
-        out = torch.stack(results).to(x.device)
+        # `.to('cpu')` rather than `.detach().cpu()`: detaching cut the quantum branch
+        # out of the autograd graph on the input side, so `input_proj` (and the encoder
+        # upstream of it) never received any gradient. The QNode still executes on CPU.
+        out = self.qlayer(x.to('cpu')).to(x.device)
         return self.output_proj(out)
 
 # === UNet with optional quantum attention ===
