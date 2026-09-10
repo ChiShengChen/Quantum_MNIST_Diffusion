@@ -1,0 +1,16 @@
+# Versions this branch was developed and tested against.
+# PennyLane's qml.qnn.TorchLayer and default.qubit have both changed behaviour
+# across 0.30 -> 0.45, so the lower bounds matter for reproducibility.
+
+torch>=2.0
+torchvision>=0.15
+pennylane>=0.40
+medmnist>=3.0          # PathMNIST only
+torchmetrics>=1.0      # FID / KID in evaluate.py
+matplotlib>=3.5
+numpy>=1.23
+scipy>=1.9
+tqdm>=4.60
+
+# Tests
+pytest>=7.0

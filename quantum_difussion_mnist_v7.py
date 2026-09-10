@@ -150,11 +150,12 @@ class ImprovedGaussianDiffusion:
 
 # === Sampling ===
 @torch.no_grad()
-def sample(model, diffusion, steps=1000):
+def sample(model, diffusion, steps=1000, n=1):
+    """Return [n, 1, 28, 28] in [-1, 1]. `n` samples are drawn in one batch."""
     model.eval()
-    x = torch.randn(1, 1, 28, 28, device=DEVICE)
+    x = torch.randn(n, 1, 28, 28, device=DEVICE)
     for t in reversed(range(steps)):
-        t_tensor = torch.tensor([t], device=DEVICE).long()
+        t_tensor = torch.full((n,), t, device=DEVICE, dtype=torch.long)
         x = diffusion.p_sample(model, x, t_tensor)
     return x
 
@@ -199,12 +200,17 @@ def train_pipeline(digit_label=1, use_quantum=False, save_dir="improved_diffusio
         loss_history.append(loss.item())
         print(f"[Label {digit_label} Epoch {epoch+1}] Loss: {loss.item():.4f}")
 
-        # Save sample images
+        # Save samples. The .pt file holds the model's raw output and is what
+        # evaluate.py reads; the .png is for eyeballing only. Do NOT compute
+        # metrics from the figure -- imshow rescales each subplot to its own
+        # min/max and the figure is rasterized at the figure DPI, so intensity
+        # and geometry are both altered before measurement.
+        imgs = sample(ema_model, diffusion, steps=1000, n=5)
+        torch.save(imgs.cpu(), f"{save_dir}/epoch{epoch+1}_samples.pt")
         plt.figure(figsize=(10, 2))
-        for i in range(5):
-            img = sample(ema_model, diffusion, steps=1000)[0].squeeze().cpu().numpy()
+        for i in range(imgs.size(0)):
             plt.subplot(1, 5, i + 1)
-            plt.imshow(img, cmap='gray')
+            plt.imshow(imgs[i].squeeze().cpu().numpy(), cmap='gray')
             plt.axis("off")
         plt.tight_layout()
         plt.savefig(f"{save_dir}/epoch{epoch+1}_samples.png")

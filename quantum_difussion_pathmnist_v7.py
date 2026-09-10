@@ -155,11 +155,12 @@ class ImprovedGaussianDiffusion:
 
 # === Sample image ===
 @torch.no_grad()
-def sample(model, diffusion, steps=1000):
+def sample(model, diffusion, steps=1000, n=1):
+    """Return [n, 3, 28, 28] in [-1, 1]. `n` samples are drawn in one batch."""
     model.eval()
-    x = torch.randn(1, 3, 28, 28, device=DEVICE)
+    x = torch.randn(n, 3, 28, 28, device=DEVICE)
     for t in reversed(range(steps)):
-        t_tensor = torch.tensor([t], device=DEVICE).long()
+        t_tensor = torch.full((n,), t, device=DEVICE, dtype=torch.long)
         x = diffusion.p_sample(model, x, t_tensor)
     return x
 
@@ -217,8 +218,14 @@ def train_pipeline(use_quantum=False, save_dir="diffusion_pathmnist_classical", 
         loss_history.append(loss.item())
         print(f"[Epoch {epoch+1}] Loss: {loss.item():.4f}")
 
-        # Save samples (5 images)
-        samples = [sample(ema_model, diffusion)[0].cpu() for _ in range(5)]
+        # Save samples (5 images). The .pt file holds the model's raw output and
+        # is what evaluate.py reads; the images below are for eyeballing only.
+        # Do NOT compute metrics from the rendered figure -- make_grid's
+        # normalize/value_range and the figure rasterization both alter the
+        # pixels before measurement.
+        batch = sample(ema_model, diffusion, n=5).cpu()
+        torch.save(batch, f"{save_dir}/epoch{epoch+1}_samples.pt")
+        samples = list(batch)
         grid = vutils.make_grid(samples, nrow=5, normalize=True, value_range=(-1, 1))
         plt.figure(figsize=(10, 2))
         plt.imshow(grid.permute(1, 2, 0).numpy())
