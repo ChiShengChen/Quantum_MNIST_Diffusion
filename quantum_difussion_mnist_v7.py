@@ -19,6 +19,7 @@ import json
 # generate_samples.py and the test suite both do.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bottlenecks import ARMS, build_bottleneck, count_parameters
+from sweep_utils import seeded_subset_indices
 import pennylane as qml
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -212,24 +213,13 @@ def sample(model, diffusion, steps=1000, n=1):
 def subsample(dataset, digit_label, n_train, seed):
     """Keep only `digit_label`, then a seeded random subset of `n_train` images.
 
-    The subset is resampled per seed on purpose (issue #5): at N=10 *which* ten
-    images you draw dominates every other source of variance, so the seed has to
-    move the data, not just the init.
+    Delegates the index selection to sweep_utils so v7 and v8 subset identically
+    (see issue #5: the subset must move with the seed).
     """
-    mask = dataset.targets == digit_label
-    dataset.data = dataset.data[mask]
-    dataset.targets = dataset.targets[mask]
-    available = len(dataset.data)
-    if n_train is None or n_train >= available:
-        if n_train is not None and n_train > available:
-            print(f"warning: asked for n_train={n_train} but digit {digit_label} "
-                  f"only has {available} images; using all of them")
-        return dataset, available
-    g = torch.Generator().manual_seed(seed)
-    idx = torch.randperm(available, generator=g)[:n_train]
+    idx, n_used = seeded_subset_indices(dataset.targets, digit_label, n_train, seed)
     dataset.data = dataset.data[idx]
     dataset.targets = dataset.targets[idx]
-    return dataset, n_train
+    return dataset, n_used
 
 
 def train_pipeline(digit_label=1, use_quantum=False, arm=None,

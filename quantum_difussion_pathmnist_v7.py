@@ -1,4 +1,7 @@
+import argparse
 import os
+import json
+import sys
 import math
 import torch
 import torch.nn as nn
@@ -8,6 +11,11 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import copy
+# `bottlenecks` lives next to this script; put that directory on sys.path so the
+# import also works when this file is loaded by path (generate_samples.py, tests).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bottlenecks import ARMS, build_bottleneck, count_parameters
+from sweep_utils import seeded_subset_indices
 import pennylane as qml
 from medmnist import PathMNIST
 import torchvision.utils as vutils
@@ -48,11 +56,12 @@ class ResBlock(nn.Module):
 
 # === Quantum Attention ===
 class QuantumLayer(nn.Module):
-    def __init__(self, n_qubits=16, n_layers=3):
+    def __init__(self, n_qubits=16, n_layers=3,
+                 device_name="default.qubit", diff_method="backprop"):
         super().__init__()
-        dev = qml.device("default.qubit", wires=n_qubits)
+        dev = qml.device(device_name, wires=n_qubits)
 
-        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        @qml.qnode(dev, interface="torch", diff_method=diff_method)
         def circuit(inputs, weights):
             # `inputs[..., i]` (rather than `inputs[i]`) so the same circuit works for
             # a single sample and for a batched [B, n_qubits] input.
@@ -87,19 +96,41 @@ class QuantumLayer(nn.Module):
 
 # === UNet ===
 class ImprovedUNet(nn.Module):
-    def __init__(self, channels=3, use_quantum=False):
+    """U-Net whose bottleneck gating module is chosen by `arm` (see bottlenecks.py).
+
+    `use_quantum` is kept as a deprecated alias: True -> "quantum", False ->
+    "plain". Note "plain" has no gating module at all and so is not a
+    parameter-matched control for "quantum" -- use "se" for that (issue #3).
+    """
+
+    def __init__(self, channels=3, use_quantum=False, arm=None, n_hidden=16,
+                 **quantum_kwargs):
         super().__init__()
-        self.use_quantum = use_quantum
+        if arm is None:
+            arm = "quantum" if use_quantum else "plain"
+        if arm not in ARMS:
+            raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
+        self.arm = arm
+        self.use_quantum = (arm == "quantum")
         self.enc1 = nn.Conv2d(channels, 32, 3, padding=1)
         self.enc2 = nn.Conv2d(32, 64, 3, stride=2, padding=1)
         self.enc3 = nn.Conv2d(64, 128, 3, stride=2, padding=1)
         self.res_block = ResBlock(128)
         self.time_embed_proj = nn.Linear(128, 128)
-        if use_quantum:
-            self.q_attn = QuantumLayer()
+        # This script's QuantumLayer has a trainable input_proj, so the
+        # down-projection is a Linear and all four arms apply.
+        bottleneck = build_bottleneck(arm, QuantumLayer, channels=128,
+                                     n_hidden=n_hidden, down="linear",
+                                     **quantum_kwargs)
+        if bottleneck is not None:
+            self.q_attn = bottleneck
         self.dec1 = nn.ConvTranspose2d(128, 64, 2, stride=2)
         self.dec2 = nn.ConvTranspose2d(64, 32, 2, stride=2)
         self.out = nn.Conv2d(64, channels, 3, padding=1)
+
+    def bottleneck_parameter_counts(self):
+        """(trainable, total) params in the gating module -- for the #3 table."""
+        return count_parameters(getattr(self, "q_attn", None))
 
     def forward(self, x, t):
         t_embed = get_timestep_embedding(t, 128).to(x.device)
@@ -109,7 +140,7 @@ class ImprovedUNet(nn.Module):
         e3 = F.relu(self.enc3(e2)) + t_proj
         x = self.res_block(e3)
         pooled = F.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1)
-        if self.use_quantum:
+        if self.arm != "plain":
             q_weight = self.q_attn(pooled).unsqueeze(-1).unsqueeze(-1)
             x = x * q_weight
         d1 = F.relu(self.dec1(x))
@@ -166,7 +197,14 @@ def sample(model, diffusion, steps=1000, n=1):
 
 
 # === Dataset ===
-def load_pathmnist(label_condition=1):
+def load_pathmnist(label_condition=1, n_train=None, seed=0, batch_size=64):
+    """DataLoader over one PathMNIST class, optionally a seeded subset of it.
+
+    The label filter reads `dataset.labels` directly. It previously did
+    `[i for i, (_, label) in enumerate(dataset) ...]`, which pulls every one of
+    the ~90k training images through Resize + ToTensor + Normalize just to read
+    its label -- minutes of work to build an index.
+    """
     transform = transforms.Compose([
         transforms.Resize((28, 28)),
         transforms.ToTensor(),
@@ -174,25 +212,61 @@ def load_pathmnist(label_condition=1):
     ])
     dataset = PathMNIST(split='train', download=True, transform=transform)
 
-    if label_condition is not None:
-        # setting label
-        indices = [i for i, (_, label) in enumerate(dataset) if label == label_condition]
-        dataset = torch.utils.data.Subset(dataset, indices)
+    labels = torch.as_tensor(dataset.labels).squeeze(-1)
+    indices, n_used = seeded_subset_indices(labels, label_condition, n_train, seed)
+    if label_condition is not None or n_train is not None:
+        dataset = torch.utils.data.Subset(dataset, indices.tolist())
 
-    loader = DataLoader(dataset, batch_size=64, shuffle=True)
-    return loader
+    loader = DataLoader(dataset, batch_size=min(batch_size, n_used), shuffle=True)
+    return loader, n_used
 
 
 
 # === Training ===
-def train_pipeline(use_quantum=False, save_dir="diffusion_pathmnist_classical", label_condition=1):
-    if label_condition is not None:
-        save_dir += f"_label{label_condition}"
+def train_pipeline(use_quantum=False, arm=None, save_dir="diffusion_pathmnist",
+                   label_condition=1, n_train=None, seed=0, n_hidden=16,
+                   batch_size=64, device_name="default.qubit",
+                   diff_method="backprop"):
+    """Train one arm on one PathMNIST class.
+
+    Args:
+        arm: one of bottlenecks.ARMS; overrides `use_quantum`.
+        n_train: training images (issue #5's x-axis). None = the whole class.
+        seed: seeds init, noise *and* the data subset.
+    """
+    if arm is None:
+        arm = "quantum" if use_quantum else "plain"
+    torch.manual_seed(seed)
+
+    run_name = f"path_{label_condition}_{arm}_n{n_train if n_train is not None else 'all'}_s{seed}"
+    save_dir = os.path.join(save_dir, run_name)
     os.makedirs(save_dir, exist_ok=True)
 
-    loader = load_pathmnist(label_condition=label_condition)
-    model = ImprovedUNet(channels=3, use_quantum=use_quantum).to(DEVICE)
-    ema_model = copy.deepcopy(model)
+    loader, n_used = load_pathmnist(label_condition=label_condition, n_train=n_train,
+                                   seed=seed, batch_size=batch_size)
+    quantum_kwargs = ({"device_name": device_name, "diff_method": diff_method}
+                      if arm == "quantum" else {})
+    model = ImprovedUNet(channels=3, arm=arm, n_hidden=n_hidden,
+                         **quantum_kwargs).to(DEVICE)
+    bn_trainable, bn_total = model.bottleneck_parameter_counts()
+    manifest = {
+        "script": "pathmnist", "arm": arm, "label": label_condition,
+        "n_train": n_used, "seed": seed, "batch_size": loader.batch_size,
+        "n_hidden": n_hidden,
+        "qdevice": device_name if arm == "quantum" else None,
+        "diff_method": diff_method if arm == "quantum" else None,
+        "model_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "bottleneck_trainable_params": bn_trainable,
+        "bottleneck_total_params": bn_total,
+    }
+    with open(os.path.join(save_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[{run_name}] {json.dumps(manifest)}")
+    # Built and loaded rather than deepcopy-ed: lightning.qubit holds a C++
+    # StateVectorC128 that cannot be pickled.
+    ema_model = ImprovedUNet(channels=3, arm=arm, n_hidden=n_hidden,
+                             **quantum_kwargs).to(DEVICE)
+    ema_model.load_state_dict(model.state_dict())
     diffusion = ImprovedGaussianDiffusion()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     loss_history = []
@@ -258,7 +332,35 @@ def train_pipeline(use_quantum=False, save_dir="diffusion_pathmnist_classical", 
 
 
 # === Run ===
+def main():
+    ap = argparse.ArgumentParser(
+        description="Train the PathMNIST diffusion model, one arm of the #3 "
+                    "ablation ladder at a time.")
+    ap.add_argument("--arm", choices=ARMS, default="quantum",
+                    help="'se' is the parameter-matched classical control; "
+                         "'plain' has no gating module at all.")
+    ap.add_argument("--label", type=int, default=1,
+                    help="PathMNIST class to train on (None-like: use --all-labels)")
+    ap.add_argument("--all-labels", action="store_true",
+                    help="train on every class at once instead of one")
+    ap.add_argument("--n-train", type=int, default=None)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--n-hidden", type=int, default=16)
+    ap.add_argument("--qdevice", default="default.qubit",
+                    help="lightning.qubit with --diff-method adjoint is ~3.5x faster")
+    ap.add_argument("--diff-method", default="backprop",
+                    choices=["backprop", "adjoint", "parameter-shift"])
+    ap.add_argument("--save-dir", default=None, help="default: diffusion_pathmnist_<arm>")
+    args = ap.parse_args()
+
+    train_pipeline(arm=args.arm,
+                   save_dir=args.save_dir or f"diffusion_pathmnist_{args.arm}",
+                   label_condition=None if args.all_labels else args.label,
+                   n_train=args.n_train, seed=args.seed, n_hidden=args.n_hidden,
+                   batch_size=args.batch_size, device_name=args.qdevice,
+                   diff_method=args.diff_method)
+
+
 if __name__ == '__main__':
-    # train_pipeline(use_quantum=True)
-    train_pipeline(use_quantum=False, save_dir="diffusion_pathmnist_classical")
-    train_pipeline(use_quantum=True, save_dir="diffusion_pathmnist_quantum")
+    main()

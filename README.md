@@ -240,9 +240,31 @@ python quantum_difussion_mnist_v7.py --arm quantum --digits 3 \
 # Enumerate the full scaling grid, with a cost estimate, before running it:
 python run_scaling_study.py --digits 3 --dry-run
 
-# Train on PathMNIST (still edit-the-source; not yet ported to the CLI)
-python quantum_difussion_pathmnist_v7.py
+# The v8 full U-Net and the PathMNIST script take the same --arm flag.
+# Note v8 has only three arms: its circuit pools its own input, so there is no
+# down-projection to freeze and `se_frozen` does not apply there.
+python full_unet/quantum_diffusion_mnist_v8.py --arm se --digits 3 --n-train 100
+python quantum_difussion_pathmnist_v7.py       --arm se --label 1 --n-train 100
 ```
+
+#### Arms, per script
+
+| script | `plain` | `se` | `se_frozen` | `quantum` | step budget |
+|---|---|---|---|---|---|
+| `quantum_difussion_mnist_v7.py` | ✓ | ✓ | ✓ | ✓ | `--max-steps` |
+| `quantum_difussion_pathmnist_v7.py` | ✓ | ✓ | ✓ | ✓ | epochs only |
+| `full_unet/quantum_diffusion_mnist_v8.py` | ✓ | ✓ | — | ✓ | epochs only |
+
+`se` is parameter-matched to `quantum` in all three — they differ by exactly the
+96 circuit weights. For v8 that requires the classical arm to reduce by pooling
+rather than by a `Linear`, since v8's circuit has no `input_proj`; a `Linear`
+there would quietly hand the classical arm 2 064 parameters the quantum arm does
+not have.
+
+**Only v7 has a step budget.** The other two train a fixed number of epochs, so
+their cells at different `--n-train` are not compute-matched: at N=10 an epoch is
+a single gradient step, and a curve built that way conflates "less data" with
+"fewer updates". `run_scaling_study.py` warns when you ask it for such a sweep.
 
 ### Evaluation
 ```bash

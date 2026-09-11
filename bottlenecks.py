@@ -15,6 +15,11 @@ same block.
                                                                 projection?"
     quantum       Linear(C,h) -> QNode -> Linear(h,C)          the circuit itself
 
+Which arms apply depends on the script: v7 and the pathmnist model have a
+trainable `input_proj` inside `QuantumLayer`, so all four arms are available. v8's
+circuit pools its own input instead, so there is no down-projection to freeze and
+`se_frozen` is rejected there rather than silently duplicating `se`.
+
 `se` vs `quantum` is the honest test of the circuit: the two differ only by the
 QNode in place of the ReLU, plus the circuit's own parameters.
 
@@ -29,6 +34,7 @@ differ only in the bottleneck and not in how the gate is bounded.
 """
 
 import torch.nn as nn
+import torch.nn.functional as F
 
 ARMS = ("plain", "se", "se_frozen", "quantum")
 
@@ -36,7 +42,7 @@ ARMS = ("plain", "se", "se_frozen", "quantum")
 class SEBottleneck(nn.Module):
     """Classical counterpart of ``QuantumLayer``.
 
-    Mirrors the quantum arm's shape exactly: project ``channels -> n_hidden``,
+    Mirrors the quantum arm's shape exactly: reduce ``channels -> n_hidden``,
     apply a nonlinearity, project back. ``n_hidden`` defaults to the quantum
     arm's qubit count so the two are parameter-matched up to the circuit's own
     weights.
@@ -45,12 +51,33 @@ class SEBottleneck(nn.Module):
         channels: width of the feature vector being gated.
         n_hidden: bottleneck width (the quantum arm's ``n_qubits``).
         freeze_down: if True, the down-projection is frozen at initialization
-            (the ``se_frozen`` arm).
+            (the ``se_frozen`` arm). Only meaningful when ``down="linear"``.
+        down: how the reduction to ``n_hidden`` is done, matching whichever
+            ``QuantumLayer`` this arm is standing in for:
+
+            * ``"linear"`` -- ``nn.Linear(channels, n_hidden)``, as in v7 and
+              the pathmnist script, whose QuantumLayer has an ``input_proj``.
+            * ``"pool"`` -- ``adaptive_avg_pool1d``, as in v8, whose circuit
+              reduces its own input and therefore has **no** down-projection
+              parameters. Using ``"linear"`` against v8 would hand the classical
+              arm ``channels*n_hidden + n_hidden`` parameters the quantum arm
+              does not have, which is the confound this ladder exists to remove.
     """
 
-    def __init__(self, channels=128, n_hidden=16, freeze_down=False):
+    def __init__(self, channels=128, n_hidden=16, freeze_down=False, down="linear"):
         super().__init__()
-        self.down = nn.Linear(channels, n_hidden)
+        if down not in ("linear", "pool"):
+            raise ValueError(f"unknown down={down!r}; expected 'linear' or 'pool'")
+        if down == "pool" and freeze_down:
+            raise ValueError(
+                "freeze_down is meaningless with down='pool': adaptive_avg_pool1d "
+                "has no parameters to freeze, so the arm would be identical to "
+                "'se'. The se_frozen arm only applies where QuantumLayer has a "
+                "trainable input_proj (v7 / pathmnist), not to v8."
+            )
+        self.down_mode = down
+        self.n_hidden = n_hidden
+        self.down = nn.Linear(channels, n_hidden) if down == "linear" else None
         self.act = nn.ReLU()
         self.up = nn.Linear(n_hidden, channels)
         self.freeze_down = freeze_down
@@ -58,11 +85,18 @@ class SEBottleneck(nn.Module):
             for p in self.down.parameters():
                 p.requires_grad_(False)
 
+    def reduce(self, x):
+        if self.down_mode == "linear":
+            return self.down(x)
+        # Matches v8's circuit, which pools its own input down to n_qubits.
+        return F.adaptive_avg_pool1d(x.unsqueeze(1), self.n_hidden).squeeze(1)
+
     def forward(self, x):
-        return self.up(self.act(self.down(x)))
+        return self.up(self.act(self.reduce(x)))
 
 
-def build_bottleneck(arm, quantum_layer_cls, channels=128, n_hidden=16, **quantum_kwargs):
+def build_bottleneck(arm, quantum_layer_cls, channels=128, n_hidden=16,
+                     down="linear", **quantum_kwargs):
     """Return the bottleneck module for `arm`, or None for the plain arm.
 
     `quantum_layer_cls` is passed in rather than imported so this module stays
@@ -77,7 +111,7 @@ def build_bottleneck(arm, quantum_layer_cls, channels=128, n_hidden=16, **quantu
         # quantum_kwargs carries simulator choices (device_name, diff_method);
         # the classical arms have no use for them.
         return quantum_layer_cls(n_qubits=n_hidden, **quantum_kwargs)
-    return SEBottleneck(channels, n_hidden, freeze_down=(arm == "se_frozen"))
+    return SEBottleneck(channels, n_hidden, freeze_down=(arm == "se_frozen"), down=down)
 
 
 def count_parameters(module):

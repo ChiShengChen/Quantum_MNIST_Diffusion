@@ -41,10 +41,21 @@ def cells(digits, ns, arms, seeds):
         yield digit, n, arm, seed
 
 
+# Only v7 has a step-based budget. v8 and the pathmnist script are still
+# epoch-based, which means their cells are NOT comparable across N: at N=10 an
+# epoch is one gradient step, so the low-N arms come out undertrained rather than
+# data-limited. Sweeping N on those two needs the step budget ported over first.
+STEP_BUDGET_SCRIPTS = ("quantum_difussion_mnist_v7.py",)
+
+
+def supports_step_budget(script):
+    return any(script.endswith(s) for s in STEP_BUDGET_SCRIPTS)
+
+
 def command(script, digit, n, arm, seed, steps, save_dir, n_hidden):
     cmd = [sys.executable, script, "--arm", arm, "--digits", str(digit),
-           "--seed", str(seed), "--max-steps", str(steps),
-           "--save-dir", save_dir, "--n-hidden", str(n_hidden)]
+           "--seed", str(seed), "--save-dir", save_dir, "--n-hidden", str(n_hidden)]
+    cmd += ["--max-steps", str(steps)] if supports_step_budget(script) else []
     if n is not None:
         cmd += ["--n-train", str(n)]
     return cmd
@@ -76,19 +87,30 @@ def main():
     args = ap.parse_args()
 
     ns = args.n_train if args.n_train is not None else list(DEFAULT_N)
-    grid = list(cells(args.digits, ns, args.arms, args.seeds))
+    arms = args.arms
+    if "se_frozen" in arms and "_v8" in args.script:
+        print("note: dropping se_frozen -- v8's circuit pools its own input, so "
+              "there is no down-projection to freeze", file=sys.stderr)
+        arms = [a for a in arms if a != "se_frozen"]
+    if len(ns) > 1 and not supports_step_budget(args.script):
+        print(f"warning: {args.script} has no --max-steps, so it trains a fixed "
+              f"number of *epochs*. Cells at different N are therefore not "
+              f"compute-matched and the resulting curve conflates 'less data' "
+              f"with 'fewer gradient steps'. Port the step budget first.",
+              file=sys.stderr)
+    grid = list(cells(args.digits, ns, arms, args.seeds))
     per_arm = len(args.digits) * len(ns) * len(args.seeds)
 
     if args.dry_run:
-        hours = estimate_hours(args.arms, per_arm, args.max_steps)
+        hours = estimate_hours(arms, per_arm, args.max_steps)
         print(f"{len(grid)} cells: {len(args.digits)} digit(s) x {len(ns)} N x "
-              f"{len(args.arms)} arm(s) x {len(args.seeds)} seed(s)")
+              f"{len(arms)} arm(s) x {len(args.seeds)} seed(s)")
         print(f"  N values : {ns}")
-        print(f"  arms     : {args.arms}")
+        print(f"  arms     : {arms}")
         print(f"  budget   : {args.max_steps} steps per cell (fixed across N)")
         print(f"\nrough serial cost: {hours:.1f} h "
               f"({hours/24:.1f} days) on one CPU core, dominated by the quantum arm")
-        if "quantum" in args.arms:
+        if "quantum" in arms:
             q_hours = estimate_hours(["quantum"], per_arm, args.max_steps)
             print(f"  quantum arm alone: {q_hours:.1f} h of that")
             print("  -> run the classical arms first; they are ~350x cheaper per step")

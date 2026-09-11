@@ -1,6 +1,9 @@
 # === Quantum Diffusion MNIST v8 (Improved UNet, ResBlocks, Time Embedding) ===
 
+import argparse
 import os
+import json
+import sys
 import math
 import torch
 import torch.nn as nn
@@ -10,6 +13,10 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import copy
+# `bottlenecks` lives in the repo root, one level up from full_unet/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from bottlenecks import ARMS, build_bottleneck, count_parameters
+from sweep_utils import seeded_subset_indices
 import pennylane as qml
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -57,12 +64,13 @@ class ResBlock(nn.Module):
 # === Quantum Attention Layer ===
 # (Unchanged from v7, but ensures input/output matches TIME_EMBED_DIM if used)
 class QuantumLayer(nn.Module):
-    def __init__(self, n_qubits=16, n_layers=3, embed_dim=TIME_EMBED_DIM):
+    def __init__(self, n_qubits=16, n_layers=3, embed_dim=TIME_EMBED_DIM,
+                 device_name="default.qubit", diff_method="backprop"):
         super().__init__()
         self.n_qubits = n_qubits
-        dev = qml.device("default.qubit", wires=n_qubits)
+        dev = qml.device(device_name, wires=n_qubits)
 
-        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        @qml.qnode(dev, interface="torch", diff_method=diff_method)
         def circuit(inputs, weights):
             # Ensure input features match n_qubits
             inputs_resized = F.adaptive_avg_pool1d(inputs.unsqueeze(1), n_qubits).squeeze(1)
@@ -103,9 +111,23 @@ class QuantumLayer(nn.Module):
 
 # === Improved UNet with ResBlocks, Time Embedding, and Skip Connections ===
 class ImprovedUNet(nn.Module):
-    def __init__(self, use_quantum=False, time_embed_dim=TIME_EMBED_DIM):
+    def __init__(self, use_quantum=False, time_embed_dim=TIME_EMBED_DIM,
+                 arm=None, n_hidden=16, **quantum_kwargs):
+        """`arm` selects the bottleneck module; see bottlenecks.py and issue #3.
+
+        Unlike v7, this model's QuantumLayer reduces its own input with
+        `adaptive_avg_pool1d`, so the quantum arm has **no** down-projection
+        parameters. The classical control therefore has to pool too
+        (`down="pool"`), and `se_frozen` does not apply here -- there is nothing
+        to freeze. Passing it raises rather than silently duplicating `se`.
+        """
         super().__init__()
-        self.use_quantum = use_quantum
+        if arm is None:
+            arm = "quantum" if use_quantum else "plain"
+        if arm not in ARMS:
+            raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
+        self.arm = arm
+        self.use_quantum = (arm == "quantum")
         self.time_embed_dim = time_embed_dim
 
         # Initial projection
@@ -120,10 +142,15 @@ class ImprovedUNet(nn.Module):
 
         # Bottleneck (Optional Quantum Attention)
         self.mid_res = ResBlock(128, 128, time_embed_dim)
-        if use_quantum:
-            # Ensure quantum layer input dim matches the bottleneck feature dim if applied differently
-            # Here, applying it to the pooled features, so input is 128
-            self.q_attn = QuantumLayer(embed_dim=128) # Assuming bottleneck dim is 128
+        # The bottleneck feature dim is 128. down="pool" mirrors this script's
+        # QuantumLayer, which pools 128 -> n_qubits inside the circuit rather
+        # than through a trainable Linear; a Linear here would hand the classical
+        # arm 2064 parameters the quantum arm does not have.
+        bottleneck = build_bottleneck(arm, QuantumLayer, channels=128,
+                                     n_hidden=n_hidden, down="pool",
+                                     **quantum_kwargs)
+        if bottleneck is not None:
+            self.q_attn = bottleneck
 
         # Decoder
         self.up1 = nn.ConvTranspose2d(128, 64, 2, stride=2) # Upsample
@@ -134,6 +161,10 @@ class ImprovedUNet(nn.Module):
 
         # Final Layer
         self.out = nn.Conv2d(32, 1, 1) # Use 1x1 conv for final projection
+
+    def bottleneck_parameter_counts(self):
+        """(trainable, total) params in the gating module -- for the #3 table."""
+        return count_parameters(getattr(self, "q_attn", None))
 
     def forward(self, x, t):
         # Time embedding
@@ -152,8 +183,8 @@ class ImprovedUNet(nn.Module):
         # Bottleneck
         mid = self.mid_res(h3, t_emb)
 
-        if self.use_quantum:
-             # Apply quantum attention similar to v7, on pooled features
+        if self.arm != "plain":
+             # Apply the bottleneck gate on pooled features
             pooled = F.adaptive_avg_pool2d(mid, (1, 1)).squeeze(-1).squeeze(-1) # [B, 128]
             q_weight = self.q_attn(pooled) # Shape: [B, 128]
             # Apply as channel-wise scaling (needs unsqueezing)
@@ -228,8 +259,25 @@ def sample(model, diffusion, steps=1000, batch_size=1): # Added batch_size optio
 
 # === Training ===
 # (Mostly unchanged, ensures correct model and diffusion instances are used)
-def train_pipeline(digit_label=1, use_quantum=False, save_dir_base="diffusion_models_v8", epochs=30, batch_size=64, lr=3e-4):
-    save_dir = os.path.join(save_dir_base, f"mnist_{'quantum' if use_quantum else 'classical'}", f"label_{digit_label}")
+def train_pipeline(digit_label=1, use_quantum=False, arm=None,
+                   save_dir_base="diffusion_models_v8", epochs=30, batch_size=64,
+                   lr=3e-4, n_train=None, seed=0, n_hidden=16,
+                   device_name="default.qubit", diff_method="backprop"):
+    """Train one arm on one digit.
+
+    Args:
+        arm: one of bottlenecks.ARMS; overrides `use_quantum`. Note "se_frozen"
+            is not available on this model -- its circuit pools its own input, so
+            there is no down-projection to freeze.
+        n_train: training images (issue #5's x-axis). None = the whole class.
+        seed: seeds init, noise *and* the data subset.
+    """
+    if arm is None:
+        arm = "quantum" if use_quantum else "plain"
+    torch.manual_seed(seed)
+
+    run_name = f"mnist_{digit_label}_{arm}_n{n_train if n_train is not None else 'all'}_s{seed}"
+    save_dir = os.path.join(save_dir_base, run_name)
     os.makedirs(save_dir, exist_ok=True)
     print(f"Saving results to: {save_dir}")
 
@@ -238,18 +286,34 @@ def train_pipeline(digit_label=1, use_quantum=False, save_dir_base="diffusion_mo
     ])
     dataset = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
 
-    # Filter for the specific digit
-    indices = [i for i, target in enumerate(dataset.targets) if target == digit_label]
-    subset_dataset = torch.utils.data.Subset(dataset, indices)
+    # Seeded subset of this digit (shared with v7 via sweep_utils).
+    indices, n_used = seeded_subset_indices(dataset.targets, digit_label, n_train, seed)
+    subset_dataset = torch.utils.data.Subset(dataset, indices.tolist())
 
-    if not subset_dataset:
-         print(f"Warning: No data found for label {digit_label}. Skipping training.")
-         return
+    loader = DataLoader(subset_dataset, batch_size=min(batch_size, n_used),
+                        shuffle=True, num_workers=4, pin_memory=True)
 
-    loader = DataLoader(subset_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-
-    model = ImprovedUNet(use_quantum=use_quantum).to(DEVICE)
-    ema_model = copy.deepcopy(model)
+    quantum_kwargs = ({"device_name": device_name, "diff_method": diff_method}
+                      if arm == "quantum" else {})
+    model = ImprovedUNet(arm=arm, n_hidden=n_hidden, **quantum_kwargs).to(DEVICE)
+    bn_trainable, bn_total = model.bottleneck_parameter_counts()
+    manifest = {
+        "script": "v8", "arm": arm, "digit": digit_label, "n_train": n_used,
+        "seed": seed, "epochs": epochs, "batch_size": loader.batch_size, "lr": lr,
+        "n_hidden": n_hidden,
+        "qdevice": device_name if arm == "quantum" else None,
+        "diff_method": diff_method if arm == "quantum" else None,
+        "model_trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "bottleneck_trainable_params": bn_trainable,
+        "bottleneck_total_params": bn_total,
+    }
+    with open(os.path.join(save_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[{run_name}] {json.dumps(manifest)}")
+    # Built and loaded rather than deepcopy-ed: lightning.qubit holds a C++
+    # StateVectorC128 that cannot be pickled.
+    ema_model = ImprovedUNet(arm=arm, n_hidden=n_hidden, **quantum_kwargs).to(DEVICE)
+    ema_model.load_state_dict(model.state_dict())
     diffusion = ImprovedGaussianDiffusion()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -322,49 +386,58 @@ def train_pipeline(digit_label=1, use_quantum=False, save_dir_base="diffusion_mo
     # Plot loss
     plt.figure()
     plt.plot(loss_history)
-    plt.title(f"Training Loss (Label {digit_label}, {'Quantum' if use_quantum else 'Classical'})")
+    plt.title(f"Training Loss (Label {digit_label}, arm={arm})")
     plt.xlabel("Epoch")
     plt.ylabel("Average MSE Loss")
     plt.grid(True)
     plt.savefig(f"{save_dir}/loss_curve.png")
     plt.close()
 
+def main():
+    ap = argparse.ArgumentParser(
+        description="Train the v8 full-U-Net MNIST diffusion model, one arm of "
+                    "the #3 ablation ladder at a time.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""note:
+  This model's QuantumLayer pools its own input down to n_qubits, so it has no
+  trainable down-projection and the 'se_frozen' arm does not apply here. The
+  classical control ('se') pools too, so that 'se' and 'quantum' stay matched to
+  within the circuit's own parameters.
+
+examples:
+  python quantum_diffusion_mnist_v8.py --arm quantum --digits 3 --n-train 100
+  python quantum_diffusion_mnist_v8.py --arm se      --digits 3 --n-train 100
+""")
+    ap.add_argument("--arm", choices=[a for a in ARMS if a != "se_frozen"],
+                    default="quantum",
+                    help="bottleneck arm. 'se' is the parameter-matched classical "
+                         "control; 'plain' has no gating module at all.")
+    ap.add_argument("--digits", type=int, nargs="+", default=list(range(10)))
+    ap.add_argument("--n-train", type=int, default=None,
+                    help="training images per class; omit for the whole class")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="seeds init, noise and the data subset")
+    ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--n-hidden", type=int, default=16,
+                    help="bottleneck width; the quantum arm's qubit count")
+    ap.add_argument("--qdevice", default="default.qubit",
+                    help="lightning.qubit with --diff-method adjoint is ~3.5x "
+                         "faster and numerically equivalent")
+    ap.add_argument("--diff-method", default="backprop",
+                    choices=["backprop", "adjoint", "parameter-shift"])
+    ap.add_argument("--save-dir", default=None, help="default: diffusion_models_v8_<arm>")
+    args = ap.parse_args()
+
+    save_dir_base = args.save_dir or f"diffusion_models_v8_{args.arm}"
+    for digit in args.digits:
+        print(f"\n--- v8 arm={args.arm} digit={digit} ---")
+        train_pipeline(digit_label=digit, arm=args.arm, save_dir_base=save_dir_base,
+                       epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
+                       n_train=args.n_train, seed=args.seed, n_hidden=args.n_hidden,
+                       device_name=args.qdevice, diff_method=args.diff_method)
+
+
 if __name__ == '__main__':
-    # Example: Train classical models for digits 0 and 1, and quantum for digit 2
-    # Classical models
-    # train_pipeline(digit_label=0, use_quantum=False, save_dir_base="diffusion_models_v8_classical", epochs=50)
-    # train_pipeline(digit_label=1, use_quantum=False, save_dir_base="diffusion_models_v8_classical", epochs=50)
-
-    # Quantum model
-    # train_pipeline(digit_label=2, use_quantum=True, save_dir_base="diffusion_models_v8_quantum", epochs=50)
-
-    # Train all quantum models (example)
-    # for digit in range(10): # Train for digits 0 through 9
-    #      print(f"\n--- Training Quantum Model for Digit: {digit} ---")
-    #      train_pipeline(
-    #          digit_label=digit,
-    #          use_quantum=True,
-    #          save_dir_base="diffusion_models_v8_quantum_all_digits",
-    #          epochs=30, # Adjust epochs as needed
-    #          batch_size=64,
-    #          lr=3e-4
-    #      )
-         # Optional: Clear CUDA cache between runs if memory issues arise
-         # if torch.cuda.is_available():
-         #     torch.cuda.empty_cache()
-
-    # Train all classical models (example)
-    for digit in range(10):
-        print(f"\n--- Training Classical Model for Digit: {digit} ---")
-        train_pipeline(
-            digit_label=digit,
-            use_quantum=False,
-            save_dir_base="diffusion_models_v8_classical_all_digits",
-            epochs=30,
-            batch_size=64,
-            lr=3e-4
-        )
-        # if torch.cuda.is_available():
-        #     torch.cuda.empty_cache()
-
-    print("\n=== Training Complete ===") 
+    main()
