@@ -261,8 +261,9 @@ def sample(model, diffusion, steps=1000, batch_size=1): # Added batch_size optio
 # (Mostly unchanged, ensures correct model and diffusion instances are used)
 def train_pipeline(digit_label=1, use_quantum=False, arm=None,
                    save_dir_base="diffusion_models_v8", epochs=30, batch_size=64,
-                   lr=3e-4, n_train=None, seed=0, n_hidden=16,
-                   device_name="default.qubit", diff_method="backprop"):
+                   lr=3e-4, n_train=None, seed=0, n_hidden=16, max_steps=None,
+                   sample_every=0, device_name="default.qubit",
+                   diff_method="backprop"):
     """Train one arm on one digit.
 
     Args:
@@ -271,6 +272,11 @@ def train_pipeline(digit_label=1, use_quantum=False, arm=None,
             there is no down-projection to freeze.
         n_train: training images (issue #5's x-axis). None = the whole class.
         seed: seeds init, noise *and* the data subset.
+        max_steps: budget in optimizer steps. Required for any comparison across
+            n_train: an epoch at N=10 is a single gradient step, so an
+            epoch-based budget leaves the low-N arms undertrained rather than
+            data-limited. Falls back to epochs * steps_per_epoch when omitted.
+        sample_every: also dump samples every N steps (0 = only at the end).
     """
     if arm is None:
         arm = "quantum" if use_quantum else "plain"
@@ -317,81 +323,105 @@ def train_pipeline(digit_label=1, use_quantum=False, arm=None,
     diffusion = ImprovedGaussianDiffusion()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    loss_history = []
+    steps_per_epoch = max(1, len(loader))
+    total_steps = max_steps if max_steps is not None else epochs * steps_per_epoch
+    manifest["steps_per_epoch"] = steps_per_epoch
+    manifest["total_steps"] = total_steps
+    with open(os.path.join(save_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    loss_history = []   # (step, mean loss over the window)
+    window = []
     best_loss = float('inf')
 
-    for epoch in range(epochs):
-        epoch_loss = 0.0
-        num_batches = 0
-        model.train() # Set model to training mode
-        for x, _ in tqdm(loader, desc=f"Label {digit_label} - Epoch {epoch+1}/{epochs}"):
-            x = x.to(DEVICE)
-            optimizer.zero_grad()
-            t = torch.randint(0, diffusion.timesteps, (x.size(0),), device=DEVICE).long()
-            noise = torch.randn_like(x)
-            x_noisy = diffusion.q_sample(x, t, noise)
-            noise_pred = model(x_noisy, t)
-            loss = F.mse_loss(noise_pred, noise)
+    def infinite(loader):
+        while True:
+            for batch in loader:
+                yield batch
 
-            loss.backward()
-            optimizer.step()
+    stream = infinite(loader)
+    model.train()
+    bar = tqdm(range(1, total_steps + 1), desc=run_name)
+    for step in bar:
+        x, _ = next(stream)
+        x = x.to(DEVICE)
+        optimizer.zero_grad()
+        t = torch.randint(0, diffusion.timesteps, (x.size(0),), device=DEVICE).long()
+        noise = torch.randn_like(x)
+        x_noisy = diffusion.q_sample(x, t, noise)
+        noise_pred = model(x_noisy, t)
+        loss = F.mse_loss(noise_pred, noise)
 
-            epoch_loss += loss.item()
-            num_batches += 1
+        loss.backward()
+        optimizer.step()
 
-            # EMA Update
-            with torch.no_grad():
-                ema_decay = 0.999
-                for p_ema, p in zip(ema_model.parameters(), model.parameters()):
-                    p_ema.data.mul_(ema_decay).add_(p.data, alpha=1 - ema_decay)
+        # EMA Update
+        with torch.no_grad():
+            ema_decay = 0.999
+            for p_ema, p in zip(ema_model.parameters(), model.parameters()):
+                p_ema.data.mul_(ema_decay).add_(p.data, alpha=1 - ema_decay)
 
-        avg_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
-        loss_history.append(avg_epoch_loss)
-        print(f"[Label {digit_label} Epoch {epoch+1}] Avg Loss: {avg_epoch_loss:.4f}")
+        window.append(loss.item())
+        # Checkpoint on the mean over one epoch-equivalent of steps, so the
+        # selection criterion does not change meaning when the budget is given in
+        # steps rather than epochs.
+        if step % steps_per_epoch == 0 or step == total_steps:
+            mean_loss = sum(window) / len(window)
+            loss_history.append((step, mean_loss))
+            bar.set_postfix(mean_loss=f"{mean_loss:.4f}")
+            window = []
+            if mean_loss < best_loss:
+                best_loss = mean_loss
+                torch.save(ema_model.state_dict(), os.path.join(save_dir, "best_model.pth"))
 
-        # Save sample images using EMA model
-        if (epoch + 1) % 5 == 0 or epoch == epochs - 1: # Sample every 5 epochs and at the end
-             ema_model.eval() # Set EMA model to eval mode for sampling
-             sample_images = sample(ema_model, diffusion, steps=diffusion.timesteps, batch_size=5)[0:5] # Generate 5 samples
-             # Raw model output for evaluate.py. The .png below is for eyeballing
-             # only -- imshow rescales each subplot to its own min/max and the
-             # figure is rasterized at the figure DPI, so metrics must not be
-             # computed from it.
-             torch.save(sample_images.cpu(), f"{save_dir}/epoch{epoch+1:03d}_samples.pt")
-             plt.figure(figsize=(10, 2))
-             for i in range(sample_images.size(0)):
-                 img = sample_images[i].squeeze().cpu().numpy()
-                 plt.subplot(1, 5, i + 1)
-                 plt.imshow(img, cmap='gray')
-                 plt.axis("off")
-             plt.suptitle(f"Epoch {epoch+1} Samples (Label {digit_label})")
-             plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent title overlap
-             plt.savefig(f"{save_dir}/epoch{epoch+1:03d}_samples.png")
-             plt.close()
+        if sample_every and step % sample_every == 0:
+            dump_samples(ema_model, diffusion, save_dir, step, digit_label)
 
-        # Save best model based on average epoch loss
-        if avg_epoch_loss < best_loss:
-            best_loss = avg_epoch_loss
-            torch.save(ema_model.state_dict(), os.path.join(save_dir, "best_model.pth"))
-            print(f"Saved new best model with loss {best_loss:.4f}")
+    dump_samples(ema_model, diffusion, save_dir, total_steps, digit_label)
 
     # Save final model
     torch.save(ema_model.state_dict(), os.path.join(save_dir, "final_model.pth"))
 
-    # Save loss history to txt
-    with open(os.path.join(save_dir, "loss.txt"), "w") as f:
-        for l in loss_history:
-            f.write(f"{l}\n")
+    # Save loss history
+    with open(os.path.join(save_dir, "loss.csv"), "w") as f:
+        f.write("step,mean_loss\n")
+        for step_i, l in loss_history:
+            f.write(f"{step_i},{l}\n")
 
     # Plot loss
     plt.figure()
-    plt.plot(loss_history)
+    plt.plot([st for st, _ in loss_history], [l for _, l in loss_history])
     plt.title(f"Training Loss (Label {digit_label}, arm={arm})")
-    plt.xlabel("Epoch")
-    plt.ylabel("Average MSE Loss")
+    plt.xlabel("Step")
+    plt.ylabel("Mean MSE Loss (window)")
     plt.grid(True)
     plt.savefig(f"{save_dir}/loss_curve.png")
     plt.close()
+
+def dump_samples(ema_model, diffusion, save_dir, step, digit_label, n=5):
+    """Save the sampler's raw output (.pt) plus a contact sheet for eyeballing.
+
+    The .pt is what evaluate.py reads. Do NOT compute metrics from the .png:
+    imshow rescales each subplot to its own min/max and the figure is rasterized
+    at the figure DPI (issue #4).
+    """
+    was_training = ema_model.training
+    ema_model.eval()
+    sample_images = sample(ema_model, diffusion, steps=diffusion.timesteps,
+                           batch_size=n)[0:n]
+    torch.save(sample_images.cpu(), f"{save_dir}/step{step:06d}_samples.pt")
+    plt.figure(figsize=(10, 2))
+    for i in range(sample_images.size(0)):
+        plt.subplot(1, n, i + 1)
+        plt.imshow(sample_images[i].squeeze().cpu().numpy(), cmap='gray')
+        plt.axis("off")
+    plt.suptitle(f"Step {step} Samples (Label {digit_label})")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(f"{save_dir}/step{step:06d}_samples.png")
+    plt.close()
+    if was_training:
+        ema_model.train()
+
 
 def main():
     ap = argparse.ArgumentParser(
@@ -417,7 +447,14 @@ examples:
                     help="training images per class; omit for the whole class")
     ap.add_argument("--seed", type=int, default=0,
                     help="seeds init, noise and the data subset")
-    ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument("--max-steps", type=int, default=None,
+                    help="budget in optimizer steps. Strongly preferred over "
+                         "--epochs for any comparison across --n-train, since an "
+                         "epoch at N=10 is a single gradient step.")
+    ap.add_argument("--epochs", type=int, default=30,
+                    help="used only when --max-steps is omitted")
+    ap.add_argument("--sample-every", type=int, default=0,
+                    help="also dump samples every N steps (0 = only at the end)")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--n-hidden", type=int, default=16,
@@ -436,6 +473,7 @@ examples:
         train_pipeline(digit_label=digit, arm=args.arm, save_dir_base=save_dir_base,
                        epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
                        n_train=args.n_train, seed=args.seed, n_hidden=args.n_hidden,
+                       max_steps=args.max_steps, sample_every=args.sample_every,
                        device_name=args.qdevice, diff_method=args.diff_method)
 
 

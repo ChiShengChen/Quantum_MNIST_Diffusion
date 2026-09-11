@@ -351,32 +351,51 @@ def test_unknown_down_mode_is_rejected():
 # run_scaling_study: the budget caveat must be enforced, not just documented
 # --------------------------------------------------------------------------- #
 
-def test_runner_only_emits_step_budget_where_it_exists():
-    import run_scaling_study as rss
-    assert rss.supports_step_budget("quantum_difussion_mnist_v7.py")
-    assert not rss.supports_step_budget("full_unet/quantum_diffusion_mnist_v8.py")
-    assert not rss.supports_step_budget("quantum_difussion_pathmnist_v7.py")
+def test_runner_emits_step_budget_for_every_training_script():
+    """All three scripts now take --max-steps, so every cell gets a step budget.
 
-    v7 = rss.command("quantum_difussion_mnist_v7.py", 3, 100, "se", 0, 2000, "runs", 16)
-    v8 = rss.command("full_unet/quantum_diffusion_mnist_v8.py", 3, 100, "se", 0, 2000, "runs", 16)
-    assert "--max-steps" in v7, "v7 must get the step budget"
-    assert "--max-steps" not in v8, (
-        "v8 has no --max-steps flag; emitting it would make every cell fail"
-    )
-    for cmd in (v7, v8):
+    Cells at different N are only comparable with one: at N=10 an epoch is a
+    single gradient step, so an epoch budget leaves the low-N arms undertrained
+    rather than data-limited.
+    """
+    import run_scaling_study as rss
+    for script in ("quantum_difussion_mnist_v7.py",
+                   "full_unet/quantum_diffusion_mnist_v8.py",
+                   "quantum_difussion_pathmnist_v7.py"):
+        assert rss.supports_step_budget(script), script
+        cmd = rss.command(script, 3, 100, "se", 0, 2000, "runs", 16)
+        assert "--max-steps" in cmd, f"{script} must get the step budget"
         assert "--n-train" in cmd and "100" in cmd
 
 
+def test_runner_withholds_step_budget_from_an_unknown_script():
+    """The guard must still work: emitting --max-steps at a script that lacks it
+    would make every cell fail with 'unrecognized arguments'."""
+    import run_scaling_study as rss
+    assert not rss.supports_step_budget("some_other_train.py")
+    cmd = rss.command("some_other_train.py", 3, 100, "se", 0, 2000, "runs", 16)
+    assert "--max-steps" not in cmd
+
+
 def test_runner_warns_when_sweeping_n_without_a_step_budget(tmp_path):
-    """Sweeping N on an epoch-based script conflates data with compute."""
+    """Sweeping N on an epoch-only script conflates data with compute."""
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "run_scaling_study.py"),
+         "--script", "some_other_train.py", "--digits", "3", "--dry-run"],
+        capture_output=True, text=True, cwd=REPO_ROOT, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    assert "no --max-steps" in proc.stderr
+
+
+def test_runner_drops_se_frozen_for_v8(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(REPO_ROOT / "run_scaling_study.py"),
          "--script", "full_unet/quantum_diffusion_mnist_v8.py",
          "--digits", "3", "--dry-run"],
         capture_output=True, text=True, cwd=REPO_ROOT, timeout=300)
     assert proc.returncode == 0, proc.stderr
-    assert "no --max-steps" in proc.stderr
     assert "se_frozen" in proc.stderr, "v8 must drop the inapplicable arm"
+    assert "no --max-steps" not in proc.stderr, "v8 now has a step budget"
 
 
 @pytest.mark.parametrize("script", [
@@ -434,3 +453,30 @@ def test_seeded_subset_indices_rejects_absent_label():
     from sweep_utils import seeded_subset_indices
     with pytest.raises(ValueError, match="no samples found"):
         seeded_subset_indices(torch.zeros(10, dtype=torch.long), 7, 3, 0)
+
+
+def test_pathmnist_fast_label_filter_matches_the_slow_one():
+    """The optimized label index must be *identical*, not merely the same length.
+
+    load_pathmnist used to build its index by pulling all ~90k images through
+    Resize + ToTensor + Normalize just to read their labels (4.7 s vs 0.4 ms).
+    Reading `dataset.labels` is only valid if it picks the same images.
+    """
+    pytest.importorskip("medmnist")
+    from torchvision import transforms
+    from medmnist import PathMNIST
+    from sweep_utils import seeded_subset_indices
+
+    tf = transforms.Compose([transforms.Resize((28, 28)), transforms.ToTensor(),
+                             transforms.Normalize(mean=[0.5] * 3, std=[0.5] * 3)])
+    try:
+        ds = PathMNIST(split="train", download=False, transform=tf)
+    except Exception as exc:
+        pytest.skip(f"PathMNIST not downloaded: {exc}")
+
+    label = 1
+    slow = [i for i, (_, lab) in enumerate(ds) if lab == label]
+    fast, n = seeded_subset_indices(torch.as_tensor(ds.labels).squeeze(-1),
+                                    label, None, seed=0)
+    assert n == len(slow)
+    assert fast.tolist() == slow, "the fast label filter selects different images"

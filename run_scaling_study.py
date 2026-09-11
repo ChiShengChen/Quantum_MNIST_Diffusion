@@ -41,11 +41,15 @@ def cells(digits, ns, arms, seeds):
         yield digit, n, arm, seed
 
 
-# Only v7 has a step-based budget. v8 and the pathmnist script are still
-# epoch-based, which means their cells are NOT comparable across N: at N=10 an
-# epoch is one gradient step, so the low-N arms come out undertrained rather than
-# data-limited. Sweeping N on those two needs the step budget ported over first.
-STEP_BUDGET_SCRIPTS = ("quantum_difussion_mnist_v7.py",)
+# Scripts whose budget can be given in optimizer steps. Cells at different N are
+# only comparable on these: at N=10 an epoch is one gradient step, so an
+# epoch-based budget leaves the low-N arms undertrained rather than data-limited,
+# and the resulting curve conflates "less data" with "fewer updates".
+STEP_BUDGET_SCRIPTS = (
+    "quantum_difussion_mnist_v7.py",
+    "quantum_diffusion_mnist_v8.py",
+    "quantum_difussion_pathmnist_v7.py",
+)
 
 
 def supports_step_budget(script):
