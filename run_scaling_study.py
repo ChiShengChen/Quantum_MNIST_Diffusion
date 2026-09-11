@@ -29,11 +29,28 @@ from bottlenecks import ARMS
 
 DEFAULT_N = (10, 25, 50, 100, 250, 500, 1000, None)  # None = the whole class
 
-# Measured on one CPU core of this machine, n_qubits=16: the quantum arm costs
-# ~21 s/step against ~0.06 s/step for the classical arms, because it backpropagates
-# through a 2^16 statevector. Sampling 1000 reverse steps adds a fixed tail.
-SEC_PER_STEP = {"plain": 0.06, "se": 0.06, "se_frozen": 0.06, "quantum": 21.0}
-SAMPLE_TAIL_SEC = {"plain": 30, "se": 30, "se_frozen": 30, "quantum": 3300}
+# Measured on this machine at n_qubits=16, batch 64, one forward+backward, and a
+# 1000-step reverse sampling pass at batch 5. The quantum arm's cost depends
+# strongly on the simulator, so the estimate has to know which one you picked --
+# otherwise --dry-run quotes a number for a run you are not making.
+#
+#                       sec/step   sampling tail (s)
+#   classical arms          0.05                 1.5
+#   default.qubit+backprop 21.0                3300
+#   lightning.qubit+adjoint 4.84                 329
+CLASSICAL_SEC_PER_STEP = 0.05
+CLASSICAL_TAIL_SEC = 1.5
+QUANTUM_COST = {
+    ("default.qubit", "backprop"): (21.0, 3300.0),
+    ("lightning.qubit", "adjoint"): (4.84, 329.0),
+}
+# Anything unmeasured: assume the slow path rather than quoting an optimistic
+# number for a combination nobody timed.
+QUANTUM_COST_FALLBACK = (21.0, 3300.0)
+
+
+def quantum_cost(qdevice, diff_method):
+    return QUANTUM_COST.get((qdevice, diff_method), QUANTUM_COST_FALLBACK)
 
 
 def cells(digits, ns, arms, seeds):
@@ -56,19 +73,27 @@ def supports_step_budget(script):
     return any(script.endswith(s) for s in STEP_BUDGET_SCRIPTS)
 
 
-def command(script, digit, n, arm, seed, steps, save_dir, n_hidden):
-    cmd = [sys.executable, script, "--arm", arm, "--digits", str(digit),
+def command(script, digit, n, arm, seed, steps, save_dir, n_hidden,
+            qdevice="default.qubit", diff_method="backprop"):
+    digit_flag = "--label" if "pathmnist" in script else "--digits"
+    cmd = [sys.executable, script, "--arm", arm, digit_flag, str(digit),
            "--seed", str(seed), "--save-dir", save_dir, "--n-hidden", str(n_hidden)]
     cmd += ["--max-steps", str(steps)] if supports_step_budget(script) else []
     if n is not None:
         cmd += ["--n-train", str(n)]
+    # The simulator flags only exist for, and only affect, the quantum arm.
+    if arm == "quantum":
+        cmd += ["--qdevice", qdevice, "--diff-method", diff_method]
     return cmd
 
 
-def estimate_hours(arms, n_cells_per_arm, steps):
+def estimate_hours(arms, n_cells_per_arm, steps, qdevice, diff_method):
+    q_step, q_tail = quantum_cost(qdevice, diff_method)
     total = 0.0
     for arm in arms:
-        total += n_cells_per_arm * (steps * SEC_PER_STEP[arm] + SAMPLE_TAIL_SEC[arm])
+        per_step, tail = ((q_step, q_tail) if arm == "quantum"
+                          else (CLASSICAL_SEC_PER_STEP, CLASSICAL_TAIL_SEC))
+        total += n_cells_per_arm * (steps * per_step + tail)
     return total / 3600.0
 
 
@@ -85,6 +110,11 @@ def main():
     ap.add_argument("--max-steps", type=int, default=2000,
                     help="fixed across N so the arms are compute-matched")
     ap.add_argument("--n-hidden", type=int, default=16)
+    ap.add_argument("--qdevice", default="lightning.qubit",
+                    help="simulator for the quantum arm (default: lightning.qubit, "
+                         "3.5x faster than default.qubit and verified equivalent)")
+    ap.add_argument("--diff-method", default="adjoint",
+                    choices=["backprop", "adjoint", "parameter-shift"])
     ap.add_argument("--save-dir", default="runs")
     ap.add_argument("--dry-run", action="store_true", help="print the grid and the cost estimate only")
     ap.add_argument("--execute", action="store_true", help="run the cells sequentially in-process")
@@ -106,23 +136,28 @@ def main():
     per_arm = len(args.digits) * len(ns) * len(args.seeds)
 
     if args.dry_run:
-        hours = estimate_hours(arms, per_arm, args.max_steps)
+        hours = estimate_hours(arms, per_arm, args.max_steps,
+                               args.qdevice, args.diff_method)
         print(f"{len(grid)} cells: {len(args.digits)} digit(s) x {len(ns)} N x "
               f"{len(arms)} arm(s) x {len(args.seeds)} seed(s)")
         print(f"  N values : {ns}")
         print(f"  arms     : {arms}")
         print(f"  budget   : {args.max_steps} steps per cell (fixed across N)")
+        print(f"  simulator: {args.qdevice} / {args.diff_method}"
+              + ("" if (args.qdevice, args.diff_method) in QUANTUM_COST
+                 else "  [untimed combination -- estimate assumes the slow path]"))
         print(f"\nrough serial cost: {hours:.1f} h "
               f"({hours/24:.1f} days) on one CPU core, dominated by the quantum arm")
         if "quantum" in arms:
-            q_hours = estimate_hours(["quantum"], per_arm, args.max_steps)
+            q_hours = estimate_hours(["quantum"], per_arm, args.max_steps,
+                                     args.qdevice, args.diff_method)
             print(f"  quantum arm alone: {q_hours:.1f} h of that")
             print("  -> run the classical arms first; they are ~350x cheaper per step")
         return
 
     for digit, n, arm, seed in grid:
         cmd = command(args.script, digit, n, arm, seed, args.max_steps,
-                      args.save_dir, args.n_hidden)
+                      args.save_dir, args.n_hidden, args.qdevice, args.diff_method)
         if args.execute:
             print(f"### {' '.join(shlex.quote(c) for c in cmd)}", flush=True)
             subprocess.run(cmd, check=False)
