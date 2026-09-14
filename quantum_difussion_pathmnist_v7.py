@@ -244,7 +244,8 @@ def train_pipeline(use_quantum=False, arm=None, save_dir="diffusion_pathmnist",
         arm = "quantum" if use_quantum else "plain"
     torch.manual_seed(seed)
 
-    run_name = f"path_{label_condition}_{arm}_n{n_train if n_train is not None else 'all'}_s{seed}"
+    run_name = (f"path_{label_condition}_{arm}_n{n_train if n_train is not None else 'all'}"
+                f"_s{seed}_t{max_steps if max_steps is not None else f'e{epochs}'}")
     save_dir = os.path.join(save_dir, run_name)
     os.makedirs(save_dir, exist_ok=True)
 
