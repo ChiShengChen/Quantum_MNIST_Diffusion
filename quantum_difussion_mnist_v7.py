@@ -198,12 +198,55 @@ class ImprovedGaussianDiffusion:
         else:
             return x0_pred
 
+    @torch.no_grad()
+    def ddim_sample(self, model, x, n_steps=50, eta=0.0):
+        """Strided DDIM sampling (Song et al., ICLR 2021).
+
+        The ancestral sampler in `p_sample` needs one model call per timestep, so
+        a 1000-step sample costs 1000 forward passes. For the quantum arm every
+        one of those is a QNode call, which makes FID/KID unaffordable: 10k
+        samples per cell works out to ~177 h *per cell*.
+
+        DDIM takes a strided subsequence of the same trained model's timesteps --
+        no retraining, the model is unchanged -- so n_steps=50 is 20x cheaper.
+        eta=0 is the deterministic limit; eta=1 recovers the DDPM posterior on
+        the subsequence.
+        """
+        ts = torch.linspace(self.timesteps - 1, 0, n_steps).round().long().tolist()
+        for i, t_cur in enumerate(ts):
+            t_prev = ts[i + 1] if i + 1 < len(ts) else -1
+            t_batch = torch.full((x.size(0),), t_cur, device=x.device, dtype=torch.long)
+            eps = model(x, t_batch)
+
+            ab_t = self.alpha_bar[t_cur]
+            x0 = ((x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt()).clamp(-1, 1)
+            if t_prev < 0:
+                x = x0
+                continue
+            ab_prev = self.alpha_bar[t_prev]
+            # sigma=0 when eta=0, which makes the trajectory deterministic.
+            sigma = eta * ((1 - ab_prev) / (1 - ab_t)).sqrt() * (1 - ab_t / ab_prev).sqrt()
+            dir_xt = (1 - ab_prev - sigma ** 2).clamp(min=0).sqrt() * eps
+            x = ab_prev.sqrt() * x0 + dir_xt
+            if eta > 0:
+                x = x + sigma * torch.randn_like(x)
+        return x
+
+
 # === Sampling ===
 @torch.no_grad()
-def sample(model, diffusion, steps=1000, n=1):
-    """Return [n, 1, 28, 28] in [-1, 1]. `n` samples are drawn in one batch."""
+def sample(model, diffusion, steps=1000, n=1, sampler="ddpm", eta=0.0):
+    """Return [n, 1, 28, 28] in [-1, 1]. `n` samples are drawn in one batch.
+
+    sampler="ddpm" is the original ancestral sampler, one model call per step.
+    sampler="ddim" strides the same trained model over `steps` timesteps.
+    """
     model.eval()
     x = torch.randn(n, 1, 28, 28, device=DEVICE)
+    if sampler == "ddim":
+        return diffusion.ddim_sample(model, x, n_steps=steps, eta=eta)
+    if sampler != "ddpm":
+        raise ValueError(f"unknown sampler {sampler!r}; expected 'ddpm' or 'ddim'")
     for t in reversed(range(steps)):
         t_tensor = torch.full((n,), t, device=DEVICE, dtype=torch.long)
         x = diffusion.p_sample(model, x, t_tensor)
@@ -244,7 +287,8 @@ def train_pipeline(digit_label=1, use_quantum=False, arm=None,
         arm = "quantum" if use_quantum else "plain"
     torch.manual_seed(seed)
 
-    run_name = f"mnist_{digit_label}_{arm}_n{n_train if n_train is not None else 'all'}_s{seed}"
+    run_name = (f"mnist_{digit_label}_{arm}_n{n_train if n_train is not None else 'all'}"
+                f"_s{seed}_t{max_steps if max_steps is not None else f'e{epochs}'}")
     save_dir = os.path.join(save_dir, run_name)
     os.makedirs(save_dir, exist_ok=True)
 

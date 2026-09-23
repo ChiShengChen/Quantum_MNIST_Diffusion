@@ -247,6 +247,57 @@ python full_unet/quantum_diffusion_mnist_v8.py --arm se --digits 3 --n-train 100
 python quantum_difussion_pathmnist_v7.py       --arm se --label 1 --n-train 100
 ```
 
+#### Training budget — read this before running anything
+
+The budget dominates every other variable in this repo, and the original setting
+was far too small. Measured on digit 3, N = full class (6131 images), `se` arm,
+KID/FID from `evaluate.py` (real-vs-real floor is KID 0.0002 / FID 3.9):
+
+| steps | KID ↓ | FID ↓ | note |
+|---|---|---|---|
+| 2 000 | 0.479 | 319 | ≈ the original 30-epoch setting — **output is noise** |
+| 10 000 | 0.181 | 147 | |
+| 30 000 | 0.103 ± 0.006 (3 seeds) | 77 | |
+| 100 000 | **0.043** | **46** | recognizable digits; still improving |
+
+Two consequences:
+
+* **Nothing below ~30 000 steps is measuring generative quality.** At 2 000 steps
+  a full sweep over training-set size (N = 10 … 6131, 5 seeds, 120 cells) produced
+  a completely flat KID — not because data does not matter, but because no arm
+  learns to generate at that budget. Any arm comparison there ranks which model
+  underfits most gracefully.
+* **The curve has not plateaued at 100 000 steps.** These numbers are a lower
+  bound on what the architecture can do.
+
+The bottleneck arm is also a large efficiency win, not a handicap: `se` at 30 000
+steps (KID 0.103) beats `plain` at 100 000 steps (KID 0.310) using 3.3x less
+compute. `plain` does learn, just far more slowly.
+
+#### Quantum arm cost
+
+Every reverse-diffusion step is a model call, and for the quantum arm a QNode
+call, so cost scales with the statevector. Measured on this machine, one
+forward+backward at batch 64:
+
+| n_qubits | `lightning.qubit` | `lightning.gpu` |
+|---|---|---|
+| 4 | 0.166 s | 0.723 s |
+| 8 | 0.259 s | 1.560 s |
+| 12 | 0.824 s | 3.273 s |
+| 16 | 30.5 s | 5.05 s |
+
+`lightning.gpu` is *slower* than CPU below 16 qubits (launch overhead) and ~6x
+faster at 16. It gives no benefit to sampling, which runs under `no_grad`.
+
+`lightning.gpu` needs cuQuantum's `nvjitlink` on the loader path, or it fails at
+import with `libcusparse.so.12: undefined symbol`:
+
+```bash
+SP=$(python -c "import site; print(site.getsitepackages()[0])")
+export LD_LIBRARY_PATH=$SP/nvidia/nvjitlink/lib:$SP/nvidia/cusparse/lib:$SP/nvidia/cublas/lib:$LD_LIBRARY_PATH
+```
+
 #### Arms, per script
 
 | script | `plain` | `se` | `se_frozen` | `quantum` | step budget |

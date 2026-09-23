@@ -480,3 +480,17 @@ def test_pathmnist_fast_label_filter_matches_the_slow_one():
                                     label, None, seed=0)
     assert n == len(slow)
     assert fast.tolist() == slow, "the fast label filter selects different images"
+
+
+def test_generate_samples_accepts_the_flags_eval_cell_passes():
+    """eval_cell.py forwards --qdevice/--diff-method for quantum runs.
+
+    If generate_samples.py does not accept them, every quantum evaluation dies
+    with 'unrecognized arguments' -- which is exactly what happened on the first
+    quantum cell, after the flags were added to the training scripts only.
+    """
+    proc = subprocess.run([sys.executable, str(REPO_ROOT / "generate_samples.py"), "--help"],
+                          capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    for flag in ("--arm", "--n-hidden", "--qdevice", "--diff-method", "--sampler"):
+        assert flag in proc.stdout, f"generate_samples.py is missing {flag}"

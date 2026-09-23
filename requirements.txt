@@ -7,6 +7,9 @@ torchvision>=0.15
 pennylane>=0.40
 medmnist>=3.0          # PathMNIST only
 torchmetrics>=1.0      # FID / KID in evaluate.py
+torch-fidelity>=0.3    # torchmetrics' InceptionV3 feature extractor --
+                       # without it FID/KID raise ModuleNotFoundError at
+                       # construction, not at import
 matplotlib>=3.5
 numpy>=1.23
 scipy>=1.9
