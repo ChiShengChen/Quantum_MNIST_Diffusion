@@ -42,7 +42,8 @@ def load_arch(name):
     return module, channels
 
 
-def build_model(module, arch, use_quantum, device, arm=None, n_hidden=16):
+def build_model(module, arch, use_quantum, device, arm=None, n_hidden=16,
+                qdevice=None, diff_method=None):
     """Build the architecture the checkpoint was trained with.
 
     `arm` must match the training run: the ablation ladder gives `se` and
@@ -51,6 +52,12 @@ def build_model(module, arch, use_quantum, device, arm=None, n_hidden=16):
     `use_quantum` stays as the legacy alias.
     """
     kwargs = {"n_hidden": n_hidden}
+    # The simulator only exists on the quantum arm. Sampling runs under no_grad,
+    # so diff_method is irrelevant to the result -- but it must still be a value
+    # the device accepts, and the device itself must match what is installed.
+    if (arm == "quantum" or use_quantum):
+        if qdevice: kwargs["device_name"] = qdevice
+        if diff_method: kwargs["diff_method"] = diff_method
     if arm is not None:
         kwargs["arm"] = arm
     else:
@@ -112,6 +119,12 @@ def main():
                         "manifest.json. Overrides --use-quantum.")
     p.add_argument("--n-hidden", type=int, default=16,
                    help="bottleneck width used at training time")
+    p.add_argument("--qdevice", default=None,
+                   help="PennyLane device for the quantum arm; read it from the "
+                        "run's manifest.json so it matches training")
+    p.add_argument("--diff-method", default=None,
+                   help="differentiation method for the quantum arm (irrelevant "
+                        "to sampling, which is no_grad, but must be accepted)")
     p.add_argument("--use-quantum", action="store_true",
                    help="legacy alias for --arm quantum")
     p.add_argument("--seed", type=int, default=0)
@@ -123,7 +136,8 @@ def main():
 
     module, channels = load_arch(args.arch)
     model = build_model(module, args.arch, args.use_quantum, device,
-                        arm=args.arm, n_hidden=args.n_hidden)
+                        arm=args.arm, n_hidden=args.n_hidden,
+                        qdevice=args.qdevice, diff_method=args.diff_method)
     state = torch.load(args.checkpoint, map_location=device)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
